@@ -4,112 +4,125 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters
 )
 
-# ================= CONFIG =================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set")
+# 🔐 Admin Telegram ID (apna ID daalo)
+ADMIN_ID = 7241259696  
 
-# Study material data
-STUDY_MATERIAL = {
-    "Math": {
-        "Algebra": "https://example.com/algebra.pdf",
-        "Geometry": "https://example.com/geometry.pdf",
-    },
-    "Science": {
-        "Physics": "https://example.com/physics.pdf",
-        "Chemistry": "https://example.com/chemistry.pdf",
-    },
-    "Computer": {
-        "Python": "https://example.com/python.pdf",
-        "HTML": "https://example.com/html.pdf",
-    },
-}
+user_class = {}
+pending_upload = {}  # admin upload state
 
-# ================= COMMANDS =================
+# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📚 *Welcome to Study Material Bot!*\n\n"
-        "👉 Use /subjects to get study material\n"
-        "👉 Use /help for commands",
-        parse_mode="Markdown",
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🆘 *Help Menu*\n\n"
-        "/start - Start the bot\n"
-        "/subjects - Browse subjects\n"
-        "/about - About this bot",
-        parse_mode="Markdown",
-    )
-
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 *Study Material Bot*\n"
-        "Simple • Fast • Student Friendly",
-        parse_mode="Markdown",
-    )
-
-async def subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton(subject, callback_data=f"subject:{subject}")]
-        for subject in STUDY_MATERIAL
+        [InlineKeyboardButton("📘 Class 11", callback_data="class11")],
+        [InlineKeyboardButton("📗 Class 10", callback_data="class10")]
     ]
-
     await update.message.reply_text(
-        "📖 *Choose a subject:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
+        "Welcome 📚\nApni class choose karo:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= BUTTON HANDLER =================
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- CLASS SELECT ----------------
+async def class_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
+    class_name = query.data
+    user_class[query.from_user.id] = class_name
 
-    if data.startswith("subject:"):
-        subject = data.split(":")[1]
+    if class_name == "class9":
+        subjects = ["maths", "physics", "chemistry", "biology"]
+    else:
+        subjects = ["maths", "physics", "chemistry", "biology",]
 
-        keyboard = [
-            [InlineKeyboardButton(topic, callback_data=f"topic:{subject}:{topic}")]
-            for topic in STUDY_MATERIAL[subject]
-        ]
+    keyboard = [
+        [InlineKeyboardButton(sub.capitalize(), callback_data=f"sub_{sub}")]
+        for sub in subjects
+    ]
 
-        await query.edit_message_text(
-            f"📘 *{subject} Topics:*",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
-        )
+    await query.edit_message_text(
+        f"✅ {class_name.upper()} selected\nSubject choose karo:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-    elif data.startswith("topic:"):
-        _, subject, topic = data.split(":")
-        link = STUDY_MATERIAL[subject][topic]
+# ---------------- SEND PDF ----------------
+async def subject_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-        await query.edit_message_text(
-            f"📄 *{topic}*\n\n"
-            f"👉 [Download Material]({link})",
-            parse_mode="Markdown",
-        )
+    subject = query.data.replace("sub_", "")
+    uid = query.from_user.id
 
-# ================= MAIN =================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    if uid not in user_class:
+        await query.message.reply_text("❗ Pehle class select karo")
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("about", about))
-    app.add_handler(CommandHandler("subjects", subjects))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    cls = user_class[uid]
+    path = f"materials/{cls}/{subject}.pdf"
 
-    print("🤖 Bot is running...")
-    app.run_polling()
+    if not os.path.exists(path):
+        await query.message.reply_text("❌ PDF available nahi hai")
+        return
 
-if __name__ == "__main__":
-    main()
+    await query.message.reply_document(
+        document=open(path, "rb"),
+        caption=f"{cls.upper()} - {subject.upper()}"
+    )
+
+# ======================================================
+# 2️⃣ ADMIN-ONLY PDF UPLOAD
+# ======================================================
+
+async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text(
+        "PDF bhejo with caption:\n\n"
+        "`class9 maths`\n`class10 physics`",
+        parse_mode="Markdown"
+    )
+    pending_upload[update.effective_user.id] = True
+
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid != ADMIN_ID or uid not in pending_upload:
+        return
+
+    caption = update.message.caption
+    if not caption:
+        await update.message.reply_text("❌ Caption missing")
+        return
+
+    cls, subject = caption.split()
+    folder = f"materials/{cls}"
+    os.makedirs(folder, exist_ok=True)
+
+    file = await update.message.document.get_file()
+    path = f"{folder}/{subject}.pdf"
+    await file.download_to_drive(path)
+
+    pending_upload.pop(uid)
+    await update.message.reply_text("✅ PDF uploaded successfully")
+
+# ---------------- APP ----------------
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("upload", upload))
+
+app.add_handler(CallbackQueryHandler(class_select, pattern="^class"))
+app.add_handler(CallbackQueryHandler(subject_select, pattern="^sub_"))
+
+app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
+
+print("Bot running with buttons + admin upload...")
+app.run_polling()
 
